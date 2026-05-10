@@ -18,7 +18,6 @@ git clone https://github.com/smthemex/ComfyUI_SenseNova_U1
 ```
 pip install -r requirements.txt
 ```
-If some modules missing, please pip install   #ultralytics yolov8
 
 3.checkpoints 
 ----
