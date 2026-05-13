@@ -411,102 +411,102 @@ def infer_sensenova_t2i(engine,prompt,cfg_scale,cfg_norm,num_steps,batch_size,ti
 
 
 
-def main() -> None:
-    args = parse_args()
+# def main() -> None:
+#     args = parse_args()
 
-    dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
+#     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[args.dtype]
 
-    #sensenova_u1.set_attn_backend(args.attn_backend)
-    #print(f"[attn] backend={args.attn_backend!r} (effective={sensenova_u1.effective_attn_backend()!r})")
+#     #sensenova_u1.set_attn_backend(args.attn_backend)
+#     #print(f"[attn] backend={args.attn_backend!r} (effective={sensenova_u1.effective_attn_backend()!r})")
 
-    profiler = InferenceProfiler(enabled=args.profile, device=args.device)
-    enhancer, loop = _build_enhancer(args)
+#     profiler = InferenceProfiler(enabled=args.profile, device=args.device)
+#     enhancer, loop = _build_enhancer(args)
 
-    try:
-        with profiler.time_load():
-            engine = SenseNovaU1T2I(args.model_path, device=args.device, dtype=dtype,checkpoint=args.checkpoint)
+#     try:
+#         with profiler.time_load():
+#             engine = SenseNovaU1T2I(args.model_path, device=args.device, dtype=dtype,checkpoint=args.checkpoint)
 
-        cfg_interval = tuple(args.cfg_interval)
+#         cfg_interval = tuple(args.cfg_interval)
 
-        if args.prompt is not None:
-            prompt = _maybe_enhance(enhancer, loop, args.prompt, verbose=args.print_enhance)
-            _warn_if_unsupported(args.width, args.height)
-            with profiler.time_generate(args.width, args.height, args.batch_size):
-                images = engine.generate(
-                    prompt,
-                    image_size=(args.width, args.height),
-                    cfg_scale=args.cfg_scale,
-                    cfg_norm=args.cfg_norm,
-                    timestep_shift=args.timestep_shift,
-                    cfg_interval=cfg_interval,
-                    num_steps=args.num_steps,
-                    batch_size=args.batch_size,
-                    seed=args.seed,
-                    think_mode=args.think,
-                    streaming_prefetch_count=args.prefetch_count,
-                )
-            _save_images(images, Path(args.output))
-            if args.think:
-                think_path = (
-                    Path(args.think_output) if args.think_output else Path(args.output).with_suffix(".think.txt")
-                )
-                think_path.parent.mkdir(parents=True, exist_ok=True)
-                think_path.write_text(engine.last_think_text, encoding="utf-8")
-                print(f"[saved] {think_path}")
-                if args.print_think:
-                    print("--- think ---")
-                    print(engine.last_think_text)
-                    print("--- end think ---")
-            profiler.report()
-            return
+#         if args.prompt is not None:
+#             prompt = _maybe_enhance(enhancer, loop, args.prompt, verbose=args.print_enhance)
+#             _warn_if_unsupported(args.width, args.height)
+#             with profiler.time_generate(args.width, args.height, args.batch_size):
+#                 images = engine.generate(
+#                     prompt,
+#                     image_size=(args.width, args.height),
+#                     cfg_scale=args.cfg_scale,
+#                     cfg_norm=args.cfg_norm,
+#                     timestep_shift=args.timestep_shift,
+#                     cfg_interval=cfg_interval,
+#                     num_steps=args.num_steps,
+#                     batch_size=args.batch_size,
+#                     seed=args.seed,
+#                     think_mode=args.think,
+#                     streaming_prefetch_count=args.prefetch_count,
+#                 )
+#             _save_images(images, Path(args.output))
+#             if args.think:
+#                 think_path = (
+#                     Path(args.think_output) if args.think_output else Path(args.output).with_suffix(".think.txt")
+#                 )
+#                 think_path.parent.mkdir(parents=True, exist_ok=True)
+#                 think_path.write_text(engine.last_think_text, encoding="utf-8")
+#                 print(f"[saved] {think_path}")
+#                 if args.print_think:
+#                     print("--- think ---")
+#                     print(engine.last_think_text)
+#                     print("--- end think ---")
+#             profiler.report()
+#             return
 
-        out_dir = Path(args.output_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        with open(args.jsonl) as f:
-            samples = [json.loads(line) for line in f if line.strip()]
+#         out_dir = Path(args.output_dir)
+#         out_dir.mkdir(parents=True, exist_ok=True)
+#         with open(args.jsonl) as f:
+#             samples = [json.loads(line) for line in f if line.strip()]
 
-        try:
-            from tqdm import tqdm
-        except ImportError:
+#         try:
+#             from tqdm import tqdm
+#         except ImportError:
 
-            def tqdm(x, **_kw):  # type: ignore[no-redef]
-                return x
+#             def tqdm(x, **_kw):  # type: ignore[no-redef]
+#                 return x
 
-        for i, sample in enumerate(tqdm(samples, desc="T2I")):
-            w, h = _resolve_size(sample, args.width, args.height)
-            _warn_if_unsupported(w, h)
-            seed_i = int(sample.get("seed", args.seed))
-            think_i = bool(sample["think"]) if "think" in sample else args.think
-            prompt = _maybe_enhance(enhancer, loop, sample["prompt"], verbose=args.print_enhance)
-            with profiler.time_generate(w, h, 1):
-                images = engine.generate(
-                    prompt,
-                    image_size=(w, h),
-                    cfg_scale=args.cfg_scale,
-                    cfg_norm=args.cfg_norm,
-                    timestep_shift=args.timestep_shift,
-                    cfg_interval=cfg_interval,
-                    num_steps=args.num_steps,
-                    batch_size=1,
-                    seed=seed_i,
-                    think_mode=think_i,
-                )
-            tag = sample.get("type")
-            stem = f"{i + 1:04d}" + (f"_{tag}" if tag else "") + f"_{w}x{h}.png"
-            images[0].save(out_dir / stem)
-            if think_i:
-                think_stem = stem.replace(".png", ".think.txt")
-                (out_dir / think_stem).write_text(engine.last_think_text, encoding="utf-8")
-                if args.print_think:
-                    print(f"[think] sample {i + 1} -> {think_stem}")
+#         for i, sample in enumerate(tqdm(samples, desc="T2I")):
+#             w, h = _resolve_size(sample, args.width, args.height)
+#             _warn_if_unsupported(w, h)
+#             seed_i = int(sample.get("seed", args.seed))
+#             think_i = bool(sample["think"]) if "think" in sample else args.think
+#             prompt = _maybe_enhance(enhancer, loop, sample["prompt"], verbose=args.print_enhance)
+#             with profiler.time_generate(w, h, 1):
+#                 images = engine.generate(
+#                     prompt,
+#                     image_size=(w, h),
+#                     cfg_scale=args.cfg_scale,
+#                     cfg_norm=args.cfg_norm,
+#                     timestep_shift=args.timestep_shift,
+#                     cfg_interval=cfg_interval,
+#                     num_steps=args.num_steps,
+#                     batch_size=1,
+#                     seed=seed_i,
+#                     think_mode=think_i,
+#                 )
+#             tag = sample.get("type")
+#             stem = f"{i + 1:04d}" + (f"_{tag}" if tag else "") + f"_{w}x{h}.png"
+#             images[0].save(out_dir / stem)
+#             if think_i:
+#                 think_stem = stem.replace(".png", ".think.txt")
+#                 (out_dir / think_stem).write_text(engine.last_think_text, encoding="utf-8")
+#                 if args.print_think:
+#                     print(f"[think] sample {i + 1} -> {think_stem}")
 
-        profiler.report()
-    finally:
-        if enhancer is not None:
-            try:
-                loop.run_until_complete(enhancer.aclose())
-            finally:
-                loop.close()
+#         profiler.report()
+#     finally:
+#         if enhancer is not None:
+#             try:
+#                 loop.run_until_complete(enhancer.aclose())
+#             finally:
+#                 loop.close()
 
 
 # if __name__ == "__main__":

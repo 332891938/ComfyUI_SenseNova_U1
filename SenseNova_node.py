@@ -50,7 +50,7 @@ class SenseNova_SM_Model(io.ComfyNode):
         gguf_path=folder_paths.get_full_path("gguf",gguf) if gguf != "none" else None
         lora_path=folder_paths.get_full_path("loras",lora) if lora != "none" else None
         model_path=dit_path or gguf_path
-        model=load_sensenova_model(model_path,device,os.path.join(node_cr_path,"SenseNova-U1-8B-MoT-SFT"),attn_backend,lora_path=lora_path)
+        model=load_sensenova_model(model_path,device,node_cr_path,attn_backend,lora_path=lora_path)
         return io.NodeOutput(model)
     
 

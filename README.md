@@ -2,6 +2,7 @@
 [SenseNova-U1](https://github.com/OpenSenseNova/SenseNova-U1): Unifying Multimodal Understanding and Generation with NEO-Unify Architecture
 
 # Update
+* support SenseNova-U1-A3B-MoT-SFT and SenseNova-U1-A3B-MoT and SenseNova-U1-A3B-MoT-SFT-gguf ,支持A3B MOE的单体合并模型和gguf模型,快速测试可以修改节点加载repo的分割模型.
 * fix interleave some bugs ,add interleave max images number, 修复bug，交叉模式生成图片数量可以选入参，注意因为kv缓存的原因，越大越占用显存
 * support 8 steps lora now  支持 8步lora
 * Test it use 8G Vram 36G Ram ,确保内存（不是显存）大于36G
@@ -21,15 +22,19 @@ pip install -r requirements.txt
 
 3.checkpoints 
 ----
-[links](https://huggingface.co/smthem/SenseNova-U1-8B-MoT-Merger-gguf)  
+[8B-links](https://huggingface.co/smthem/SenseNova-U1-8B-MoT-Merger-gguf)  
+[A3B-links](https://huggingface.co/smthem/SenseNova-U1-A3B-MoT-SFT-gguf)  
+[A3B-links-modelscope](https://www.modelscope.cn/models/smthem/SenseNova-U1-A3B-MoT-SFT) 
 [lora](https://huggingface.co/sensenova/SenseNova-U1-8B-MoT-LoRAs)
 [夸克网盘](https://pan.quark.cn/s/8180628d73c5)
     
 ```
 ├── ComfyUI/models/gguf/
 |     ├── SenseNova-U1-8B-MoT-8step-Q6_K.gguf # optional 可选
+|     ├──SenseNova-U1-A3B-MoT-SFT-Q4_K_S.gguf # optional 可选
 ├── ComfyUI/models/diffusion_models/
 |     ├── SenseNova-U1-8B-MoT-8step-merge_bf16.safetensors # optional 可选
+|     ├── SenseNova-U1-A3B-MoT-SFT-merge_bf16.safetensors  可选
 ├── ComfyUI/models/loras/
 |     ├── SenseNova-U1-8B-MoT-LoRA-8step-V1.0.safetensors # optional 可选
 
@@ -37,6 +42,9 @@ pip install -r requirements.txt
 
 4. Example
 ----
+* A3B MOE
+![](https://github.com/smthemex/ComfyUI_SenseNova_U1/blob/main/example_workflows/example_a3btest.png)
+* 8B
 ![](https://github.com/smthemex/ComfyUI_SenseNova_U1/blob/main/example_workflows/example_in.png)
 ![](https://github.com/smthemex/ComfyUI_SenseNova_U1/blob/main/example_workflows/example_lora.png)
 ![](https://github.com/smthemex/ComfyUI_SenseNova_U1/blob/main/example_workflows/example_edit.png)
