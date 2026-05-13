@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import json
+import os
 import random
 from pathlib import Path
 from typing import Sequence
@@ -118,13 +118,14 @@ class SenseNovaU1Editing:
     ) -> None:
         self.device = device
         self.dtype = dtype
-        #check_checkpoint_compatibility(config)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        self.checkpoint = checkpoint
         self.model_path=model_path
-        self.config = AutoConfig.from_pretrained(self.model_path)
+        #check_checkpoint_compatibility(config)
+        self.checkpoint = checkpoint
+        self.repo=os.path.join(self.model_path,"SenseNova-U1-8B-MoT-SFT") if not "a3b" in self.checkpoint.lower() else os.path.join(self.model_path,"SenseNova-U1-A3B-MoT-SFT")
+        self.config = AutoConfig.from_pretrained(self.repo)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.repo)
         self.model = None
-
+        
     def _load_state_dict(self,lora_path=None):
         if self.model is not None:
             return  
@@ -132,15 +133,13 @@ class SenseNovaU1Editing:
             with init_empty_weights():
                 self.model=AutoModel.from_config(self.config)
             if self.checkpoint.endswith(".gguf"):
-                sd=load_gguf_checkpoint(self.checkpoint)      
+                sd=load_gguf_checkpoint(self.checkpoint) 
                 #match_state_dict(self.model, sd,show_num=10)
                 lora_sd=st_load_file(lora_path) if lora_path is not None else None
-                
                 set_gguf2meta_model(self.model,sd,self.dtype,torch.device("cpu"),lora_sd=lora_sd) 
                 if lora_path is not None:
                     del lora_sd
             else:
-                #self.model = self.model.to_empty(device=torch.device("cpu"))
                 sd=st_load_file(self.checkpoint)
                 self.model.load_state_dict(sd, strict=False, assign=True)
                 self.model = self.model.to(device=torch.device("cpu"),dtype=self.dtype)
@@ -151,7 +150,8 @@ class SenseNovaU1Editing:
             del sd
             gc.collect()
         else:
-            self.model = AutoModel.from_pretrained(self.model_path, config=self.config, torch_dtype=self.dtype).to(self.device).eval()
+            raise ValueError("Checkpoint  is not provided for loading the model.")
+            #self.model = AutoModel.from_pretrained(self.model_path, config=self.config, torch_dtype=self.dtype).to(device=torch.device("cpu")).eval()
 
 
     def _model_ctx(
