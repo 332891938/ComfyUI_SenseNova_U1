@@ -1,16 +1,16 @@
 from contextlib import nullcontext
 from diffusers.utils import is_accelerate_available
 from contextlib import AbstractContextManager, contextmanager
-from ..layer_streaming import LayerStreamingWrapper,SimpleLayerStreamingWrapper
+from ..layer_streaming import LayerStreamingWrapper,SimpleLayerStreamingWrapper,ExpertStreamingWrapper
 from collections.abc import Iterator
 from typing import Callable, TypeVar
 import gc
 import torch
+
 from ..src.sensenova_u1.utils import apply_loras_gguf
 
 _M = TypeVar("_M", bound=torch.nn.Module)
 T = TypeVar("T")
-
 
 
 def cleanup_memory() -> None:
@@ -18,8 +18,23 @@ def cleanup_memory() -> None:
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
 
-# LayerStreamingWrapper from https://github.com/Lightricks/LTX-2
 
+@contextmanager
+def _expert_streaming_ctx(model,target_device,prefetch_count):
+    """专家流式卸载的上下文管理器。"""
+    wrapper = ExpertStreamingWrapper(model, target_device,prefetch_count)
+    try:
+        yield wrapper
+    finally:
+        wrapper.teardown()
+        torch.cuda.synchronize(device=target_device)
+        try:
+            if hasattr(torch._C, "_host_emptyCache"):
+                torch._C._host_emptyCache()
+        except Exception:
+            print("Host empty cache cleanup failed; ignoring.", exc_info=True)
+
+# LayerStreaming Wrapper from https://github.com/Lightricks/LTX-2
 @contextmanager
 def _streaming_model(
     model: _M,
@@ -69,7 +84,6 @@ def _streaming_model_(
         yield wrapped  # type: ignore[misc]
     finally:
         wrapped.teardown()
-        wrapped.to("cpu")
         cleanup_memory()
         # Flush the host (pinned) memory cache so that freed pinned pages are
         # returned to the OS.  Without this, sequential streaming models
