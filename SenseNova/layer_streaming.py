@@ -1,46 +1,183 @@
-"""Layer streaming wrapper for memory-efficient inference.
-Keeps most transformer/decoder layers on CPU pinned memory and streams them
-to GPU on demand, using a secondary CUDA stream to prefetch upcoming layers
-so that data transfer overlaps with compute.
-General-purpose: works with any ``nn.Module`` whose forward iterates over a
-``nn.ModuleList`` attribute (e.g. ``transformer_blocks``, ``layers``).
-Each layer is evicted back to CPU immediately after its forward completes,
-and prefetch uses modular indexing so the last layer's prefetch wraps around
-to prepare early layers for the next forward pass.
-Example
--------
->>> model = build_my_model(device=torch.device("cpu"))
->>> model = LayerStreamingWrapper(
-...     model,
-...     layers_attr="transformer_blocks",
-...     target_device=torch.device("cuda:0"),
-...     prefetch_count=2,
-... )
->>> out = model(inputs)            # hooks handle layer streaming
->>> model.teardown()               # move everything back to CPU
-"""
-
 from __future__ import annotations
-
 import functools
 import itertools
 import logging
 from typing import Any
-
+import torch.nn.functional as F
 import torch
 from torch import nn
-
+from .src.sensenova_u1.models.neo_unify.modeling_qwen3_moe import Qwen3MoeSparseMoeBlock
 logger = logging.getLogger(__name__)
 
+class ExpertOffloadMoEBlock(nn.Module):
+    """
+    同步卸载，支持自定义缓存容量：在 GPU 上最多同时保留 `cache_capacity` 个专家。
+    gate 常驻 GPU，专家按需同步加载/卸载，采用 LRU 淘汰策略。
+    """
+    def __init__(self, moe_block, target_device: torch.device, cache_capacity: int = 1):
+        super().__init__()
+        self.moe_block = moe_block
+        self.target_device = target_device
+        self.cache_capacity = max(1, cache_capacity)  # 至少为1
+        # gate 常驻 GPU
+        self.moe_block.gate.to(target_device)
+        self._resident_experts: list[int] = []
 
-def _resolve_attr(module: nn.Module, dotted_path: str) -> nn.ModuleList:
-    """Resolve a dotted attribute path like ``'model.language_model.layers'``."""
-    obj: Any = module
-    for part in dotted_path.split("."):
-        obj = getattr(obj, part)
-    if not isinstance(obj, nn.ModuleList):
-        raise TypeError(f"Expected nn.ModuleList at '{dotted_path}', got {type(obj).__name__}")
-    return obj
+    # ----- 代理原始属性 -----
+    @property
+    def num_experts(self):
+        return self.moe_block.num_experts
+
+    @property
+    def top_k(self):
+        return self.moe_block.top_k
+
+    @property
+    def norm_topk_prob(self):
+        return self.moe_block.norm_topk_prob
+
+    # ----- LRU 管理 -----
+    def _touch(self, eid: int):
+        """将专家 eid 移到 LRU 队列末尾（最近使用）。"""
+        if eid in self._resident_experts:
+            self._resident_experts.remove(eid)
+        self._resident_experts.append(eid)
+
+    def _evict_lru(self):
+        """如果驻留数量超过 cache_capacity，卸载最久未使用的专家。"""
+        while len(self._resident_experts) >= self.cache_capacity:
+            victim = self._resident_experts.pop(0) # 最久未使用
+            self._unload_expert(victim)
+
+    def _load_expert(self, eid: int):
+        """确保专家 eid 驻留在 GPU。若缓存已满，先淘汰最久未使用的。"""
+        if eid in self._resident_experts:
+            self._touch(eid)  # 命中，只更新时间戳
+            return
+
+        # 淘汰直至有空间
+        self._evict_lru()
+
+        # 加载新专家
+        expert_module = self.moe_block.experts[eid]
+        for param in itertools.chain(expert_module.parameters(), expert_module.buffers()):
+            param.data = param.data.to(self.target_device)
+        self._resident_experts.append(eid)
+
+    def _unload_expert(self, eid: int):
+        """将指定专家从 GPU 移回 CPU。"""
+        expert_module = self.moe_block.experts[eid]
+        for param in itertools.chain(expert_module.parameters(), expert_module.buffers()):
+            param.data = param.data.to('cpu')
+      
+    def _unload_all(self):
+        """卸载所有驻留专家，释放显存。"""
+        for eid in list(self._resident_experts):
+            self._unload_expert(eid)
+        self._resident_experts.clear()
+
+   
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        orig_shape = hidden_states.shape
+        hidden_dim = orig_shape[-1]
+        flat = hidden_states.view(-1, hidden_dim)
+
+        router_logits = self.moe_block.gate(flat)
+        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float32)
+        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        if self.norm_topk_prob:
+            routing_weights = routing_weights / routing_weights.sum(dim=-1, keepdim=True)
+        routing_weights = routing_weights.to(flat.dtype)
+
+        active_experts = selected_experts.unique().tolist()
+
+        expert_mask = F.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+        output = torch.zeros_like(flat)
+       
+        for eid in active_experts:
+            
+            self._load_expert(eid)
+
+            idx, top_x = torch.where(expert_mask[eid])
+            if top_x.numel() == 0:
+                continue
+
+            expert_module = self.moe_block.experts[eid]
+            current_state = flat.index_select(0, top_x)
+            expert_out = expert_module(current_state) * routing_weights[top_x, idx, None]
+            output.index_add_(0, top_x, expert_out.to(flat.dtype))
+
+
+        # ---- forward 结束，清空所有驻留专家（可选） ----
+        #self._unload_all()
+
+        return output.view(*orig_shape)
+
+class ExpertStreamingWrapper(nn.Module):
+    """
+    同步版模型包装器：替换所有 MoE 块为 ExpertOffloadMoEBlock，
+    将非 MoE 参数移到 GPU，MoE 专家按需同步加载。
+    """
+
+    def __init__(self, model: nn.Module, target_device: torch.device,cache_capacity: int = 1):
+        super().__init__()
+        self._model = model
+        self._target_device = target_device
+        self._cache_capacity = cache_capacity
+        self._replace_map: dict[int, tuple[nn.Module, str, nn.Module]] = {}  
+
+
+        expert_param_ids: set[int] = set()
+        for module in model.modules():
+            if isinstance(module, Qwen3MoeSparseMoeBlock):
+                for expert in module.experts:
+                    for p in expert.parameters():
+                        expert_param_ids.add(id(p))
+                    for b in expert.buffers():
+                        expert_param_ids.add(id(b))
+                for p in module.gate.parameters():
+                    expert_param_ids.add(id(p))
+                for b in module.gate.buffers():
+                    expert_param_ids.add(id(b))
+
+
+        self._replace_moe_blocks(model, target_device)
+
+        for p in model.parameters():
+            if id(p) not in expert_param_ids:
+                p.data = p.data.to(target_device)
+        for b in model.buffers():
+            if id(b) not in expert_param_ids:
+                b.data = b.data.to(target_device)
+
+    def _replace_moe_blocks(self, module: nn.Module, target_device: torch.device):
+        replacements = []
+        for name, child in module.named_children():
+            if isinstance(child, Qwen3MoeSparseMoeBlock):
+                replacements.append((name, child))
+            else:
+                self._replace_moe_blocks(child, target_device)
+        for name, original in replacements:
+            wrapper = ExpertOffloadMoEBlock(original, target_device, self._cache_capacity)
+            setattr(module, name, wrapper)
+            self._replace_map[id(wrapper)] = (module, name, original)
+
+    def forward(self, *args, **kwargs):
+        return self._model(*args, **kwargs)
+
+    def teardown(self):
+        for wrapper_id, (parent, name, original) in self._replace_map.items():
+            setattr(parent, name, original)
+        self._model.to('cpu')
+        torch.cuda.synchronize(self._target_device)
+        self._replace_map.clear()
+
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self._model, name)
+        
 
 # edit from LayerStreamingWrapper from https://github.com/Lightricks/LTX-2
 
@@ -71,6 +208,14 @@ class _SimpleLayerStore:
             if name in self._cpu_params[idx]:
                 param.data = self._cpu_params[idx][name]  # 恢复为CPU副本
 
+def _resolve_attr(module: nn.Module, dotted_path: str) -> nn.ModuleList:
+    """Resolve a dotted attribute path like ``'model.language_model.layers'``."""
+    obj: Any = module
+    for part in dotted_path.split("."):
+        obj = getattr(obj, part)
+    if not isinstance(obj, nn.ModuleList):
+        raise TypeError(f"Expected nn.ModuleList at '{dotted_path}', got {type(obj).__name__}")
+    return obj
 
 class SimpleLayerStreamingWrapper(nn.Module):
     """简化版层流式处理包装器"""
