@@ -2,6 +2,7 @@
 [SenseNova-U1](https://github.com/OpenSenseNova/SenseNova-U1): Unifying Multimodal Understanding and Generation with NEO-Unify Architecture
 
 # Update
+* 暂时以同步卸载模式适配moe模型,moe模式12G显存， 文生图时，count设置为8-9，图生图设置为4左右..
 * support SenseNova-U1-A3B-MoT-SFT and SenseNova-U1-A3B-MoT and SenseNova-U1-A3B-MoT-SFT-gguf ,支持A3B MOE的单体合并模型和gguf模型,快速测试可以修改节点加载repo的分割模型.
 * fix interleave some bugs ,add interleave max images number, 修复bug，交叉模式生成图片数量可以选入参，注意因为kv缓存的原因，越大越占用显存
 * support 8 steps lora now  支持 8步lora
@@ -43,6 +44,7 @@ pip install -r requirements.txt
 4. Example
 ----
 * A3B MOE
+![](https://github.com/smthemex/ComfyUI_SenseNova_U1/blob/main/example_workflows/example_a3bedit.png)
 ![](https://github.com/smthemex/ComfyUI_SenseNova_U1/blob/main/example_workflows/example_a3btest.png)
 * 8B
 ![](https://github.com/smthemex/ComfyUI_SenseNova_U1/blob/main/example_workflows/example_in.png)
