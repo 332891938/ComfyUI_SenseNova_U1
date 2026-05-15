@@ -15,8 +15,9 @@ import gc
 # import sensenova_u1
 
 from accelerate import init_empty_weights
-from contextlib import AbstractContextManager
-from ..utils import _streaming_model,load_gguf_checkpoint, match_state_dict,set_gguf2meta_model
+from contextlib import AbstractContextManager,contextmanager
+
+from ..utils import _streaming_model,load_gguf_checkpoint, match_state_dict,set_gguf2meta_model,_expert_streaming_ctx
 from ...src.sensenova_u1.models.neo_unify.modeling_qwen3 import set_attn_backend
 from safetensors.torch import load_file as st_load_file
 from ...src.sensenova_u1.models.neo_unify.utils import load_image_native
@@ -122,6 +123,7 @@ class SenseNovaU1Editing:
         #check_checkpoint_compatibility(config)
         self.checkpoint = checkpoint
         self.repo=os.path.join(self.model_path,"SenseNova-U1-8B-MoT-SFT") if not "a3b" in self.checkpoint.lower() else os.path.join(self.model_path,"SenseNova-U1-A3B-MoT-SFT")
+        self.is_moe = "SenseNova-U1-A3B-MoT-SFT" in self.repo
         self.config = AutoConfig.from_pretrained(self.repo)
         self.tokenizer = AutoTokenizer.from_pretrained(self.repo)
         self.model = None
@@ -136,7 +138,8 @@ class SenseNovaU1Editing:
                 sd=load_gguf_checkpoint(self.checkpoint) 
                 #match_state_dict(self.model, sd,show_num=10)
                 lora_sd=st_load_file(lora_path) if lora_path is not None else None
-                set_gguf2meta_model(self.model,sd,self.dtype,torch.device("cpu"),lora_sd=lora_sd) 
+                set_gguf2meta_model(self.model,sd,self.dtype,torch.device("cpu"),lora_sd=lora_sd)
+                self.model.eval() 
                 if lora_path is not None:
                     del lora_sd
             else:
@@ -159,12 +162,15 @@ class SenseNovaU1Editing:
         streaming_prefetch_count: int | None,
     ) -> AbstractContextManager:
         if streaming_prefetch_count is not None:
-            return _streaming_model(
-                self.model,
-                layers_attr="language_model.model.layers",
-                target_device=self.device,
-                prefetch_count=streaming_prefetch_count,
-            )
+            if self.is_moe:
+                return _expert_streaming_ctx(self.model,self.device,streaming_prefetch_count)  # 同步模式以减少内存占用
+            else:
+                return _streaming_model(
+                    self.model,
+                    layers_attr="language_model.model.layers",
+                    target_device=self.device,
+                    prefetch_count=streaming_prefetch_count,
+                )
 
         return self.model
     @torch.inference_mode()
