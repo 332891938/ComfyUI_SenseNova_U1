@@ -12,7 +12,7 @@ from PIL import Image
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 import gc   
-# import sensenova_u1
+import sensenova_u1  # noqa: F401 — register NEOChatConfig with transformers Auto*
 
 from accelerate import init_empty_weights
 from contextlib import AbstractContextManager,contextmanager
