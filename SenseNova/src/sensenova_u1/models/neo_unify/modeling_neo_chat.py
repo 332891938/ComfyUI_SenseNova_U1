@@ -17,6 +17,7 @@ from .modeling_qwen3_moe import Qwen3MoeForCausalLM
 from .modeling_qwen3 import Qwen3ForCausalLM, create_block_causal_mask
 from .modeling_fm_modules import PositionEmbedding, TimestepEmbedder, FlowMatchingHead, RMSNorm, NerfEmbedder, SimpleMLPAdaLN, ConvDecoder
 from .utils import load_image_native, SYSTEM_MESSAGE_FOR_GEN
+from ...comfy_interrupt import throw_if_interrupted
 import time
 logger = logging.get_logger(__name__)
 
@@ -530,6 +531,7 @@ class NEOChatModel(PreTrainedModel):
 
 
         for _ in tqdm(range(max_think_tokens), desc="generate_think", leave=False):
+            throw_if_interrupted()
             token_item = next_token.item()
             if token_item == eos_token_id:
                 break
@@ -865,6 +867,7 @@ class NEOChatModel(PreTrainedModel):
 
 
                 for step_i in tqdm(range(num_steps), desc="interleave_gen_image_only", leave=False):
+                    throw_if_interrupted()
                     t = timesteps[step_i]
                     t_next = timesteps[step_i + 1]
 
@@ -1084,10 +1087,12 @@ class NEOChatModel(PreTrainedModel):
 
         generator = torch.Generator(self.device).manual_seed(seed)
         while True:
+            throw_if_interrupted()
             # text generation
             gen_tokens = []
             hit_max_tokens = False
             while True:
+                throw_if_interrupted()
                 token_item = next_token.item()
                 if token_item == eos_token_id or token_item == self.img_start_token_id:
                     break
@@ -1188,6 +1193,7 @@ class NEOChatModel(PreTrainedModel):
                     timesteps = self._apply_time_schedule(timesteps, token_h*token_w, timestep_shift)
                 start_time = time.time()
                 for step_i in tqdm(range(num_steps), desc="interleave_gen", leave=False):
+                    throw_if_interrupted()
                     t = timesteps[step_i]
                     t_next = timesteps[step_i + 1]
 
@@ -1529,6 +1535,7 @@ class NEOChatModel(PreTrainedModel):
             timesteps = self._apply_time_schedule(timesteps, token_h * token_w, timestep_shift)
 
         for step_i in tqdm(range(num_steps), desc="it2i_generate", leave=False):
+            throw_if_interrupted()
             t = timesteps[step_i]
             t_next = timesteps[step_i + 1]
             use_cfg = (t > cfg_interval[0] and t < cfg_interval[1]) or cfg_interval[0] == 0
@@ -1762,6 +1769,7 @@ class NEOChatModel(PreTrainedModel):
             timesteps = self._apply_time_schedule(timesteps, token_h*token_w, timestep_shift)
 
         for step_i in tqdm(range(num_steps), desc="t2i_generate", leave=False):
+            throw_if_interrupted()
             t = timesteps[step_i]
             t_next = timesteps[step_i + 1]
 

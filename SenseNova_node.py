@@ -7,7 +7,9 @@ import os
 from comfy_api.latest import  io
 import folder_paths
 
-from .node_utils import  tensor2pillist,clear_comfyui_cache
+import comfy.model_management as mm
+
+from .node_utils import tensor2pillist, clear_comfyui_cache, resolve_output_wh, throw_if_processing_interrupted
 from .SenseNova.examples.editing.inference import load_sensenova_model,infer_sensenova_edit
 from .SenseNova.examples.t2i.inference import infer_sensenova_t2i,SUPPORTED_RESOLUTIONS
 from .SenseNova.examples.interleave.inference import infer_sensenova_interleave,SUPPORTED_RESOLUTIONS as SUPPORTED_RESOLUTIONS_interleave
@@ -25,6 +27,18 @@ weigths_gguf_current_path = os.path.join(folder_paths.models_dir, "gguf")
 if not os.path.exists(weigths_gguf_current_path):
     os.makedirs(weigths_gguf_current_path)
 folder_paths.add_model_folder_path("gguf", weigths_gguf_current_path) #  gguf dir
+
+
+def _coerce_bool(value, *, default: bool = False) -> bool:
+    """Normalize widget values; avoids truthy ints (e.g. 1024) from shifted old workflows."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value == 1)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return default
+
 
 class SenseNova_SM_Model(io.ComfyNode):
     @classmethod
@@ -83,6 +97,22 @@ class SenseNova_SM_Sampler(io.ComfyNode):
                 io.Float.Input("top_p", default=0.9, min=0.0, max=1.0, step=0.1,),
                 io.Int.Input("top_k", default=0, min=0, max=1024,step=1),
                 io.Float.Input("repetition_penalty", default=0.0, min=0.0, max=10.0, step=0.1,),
+                io.Int.Input(
+                    "width",
+                    default=0,
+                    min=0,
+                    max=8192,
+                    step=32,
+                    display_name="width (0=preset)",
+                ),
+                io.Int.Input(
+                    "height",
+                    default=0,
+                    min=0,
+                    max=8192,
+                    step=32,
+                    display_name="height (0=preset)",
+                ),
                 io.Image.Input("image",optional=True),
             ],
             outputs=[
@@ -93,36 +123,53 @@ class SenseNova_SM_Sampler(io.ComfyNode):
     
     @classmethod
     def execute(cls, model, img_mode,prompt,seed, steps, target_pixels,cfg,img_cfg,timestep_shift,batch_size,prefetch_count,interleave_max,cfg_norm,enhance,
-                think_mode,do_sample,max_new_tokens,temperature,top_p,top_k,repetition_penalty,image=None) -> io.NodeOutput:
+                think_mode,do_sample,max_new_tokens,temperature,top_p,top_k,repetition_penalty,width,height,image=None) -> io.NodeOutput:
         clear_comfyui_cache()
+        enhance = _coerce_bool(enhance, default=False)
+        think_mode = _coerce_bool(think_mode, default=False)
+        do_sample = _coerce_bool(do_sample, default=True)
         top_k=None if top_k==0 else top_k
         repetition_penalty=repetition_penalty if repetition_penalty>0.0 else None
         cfg_interval=[0.0,1.0]
-        width,height=SUPPORTED_RESOLUTIONS_interleave[target_pixels] if img_mode=="interleave" else SUPPORTED_RESOLUTIONS[target_pixels]
+        res_table = SUPPORTED_RESOLUTIONS_interleave if img_mode == "interleave" else SUPPORTED_RESOLUTIONS
+        width, height = resolve_output_wh(width, height, target_pixels, res_table)
+        print(
+            f"[SenseNova] img_mode={img_mode!r} think_mode={think_mode} enhance={enhance} "
+            f"size={width}x{height} steps={steps} cfg={cfg}"
+        )
         images=tensor2pillist(image) if image is not None else None
-        
-        if prefetch_count==0:
+
+        offload_after = prefetch_count == 0
+        if offload_after:
             model.model.to(device)
-            prefetch_count=None
-        
-        if images is not None:
-            print(f"infer_mode is : {img_mode}")
-            if "edit"==img_mode:
-                image,text=infer_sensenova_edit(model,prompt,cfg,cfg_norm,steps,batch_size,timestep_shift,img_cfg,cfg_interval,width,height,images,target_pixels,seed,prefetch_count,think_mode)
-            elif "vqa"==img_mode:
-                image=torch.zeros((1,height, width,3))
-                text=infer_sensenova_vqa(model,prompt,images[0],max_new_tokens,do_sample,temperature,top_p,top_k,repetition_penalty,prefetch_count)
-            else:
-                text,image=infer_sensenova_interleave(model,prompt,cfg,steps,timestep_shift,img_cfg,images,cfg_interval,width,height,think_mode,seed,prefetch_count,interleave_max)
-        else:
-            if "interleave"==img_mode:
-                print(f"infer_mode is : interleave without image")
-                text,image=infer_sensenova_interleave(model,prompt,cfg,steps,timestep_shift,img_cfg,images,cfg_interval,width,height,think_mode,seed,prefetch_count,interleave_max)
-            else:
-                print(f"infer_mode is : t2i")
-                text,image=infer_sensenova_t2i(model,prompt,cfg,cfg_norm,steps,batch_size,timestep_shift,cfg_interval,width,height,seed,prefetch_count,think_mode,enhance,)
+            prefetch_count = None
 
-        if  prefetch_count is None:
-            model.model.to(torch.device("cpu"))
+        image_out = None
+        text_out = ""
+        try:
+            throw_if_processing_interrupted()
+            if images is not None:
+                print(f"infer_mode is : {img_mode}")
+                if "edit"==img_mode:
+                    image_out,text_out=infer_sensenova_edit(model,prompt,cfg,cfg_norm,steps,batch_size,timestep_shift,img_cfg,cfg_interval,width,height,images,target_pixels,seed,prefetch_count,think_mode)
+                elif "vqa"==img_mode:
+                    image_out=torch.zeros((1,height, width,3))
+                    text_out=infer_sensenova_vqa(model,prompt,images[0],max_new_tokens,do_sample,temperature,top_p,top_k,repetition_penalty,prefetch_count)
+                else:
+                    text_out,image_out=infer_sensenova_interleave(model,prompt,cfg,steps,timestep_shift,img_cfg,images,cfg_interval,width,height,think_mode,seed,prefetch_count,interleave_max)
+            else:
+                if "interleave"==img_mode:
+                    print(f"infer_mode is : interleave without image")
+                    text_out,image_out=infer_sensenova_interleave(model,prompt,cfg,steps,timestep_shift,img_cfg,images,cfg_interval,width,height,think_mode,seed,prefetch_count,interleave_max)
+                else:
+                    print(f"infer_mode is : t2i")
+                    text_out,image_out=infer_sensenova_t2i(model,prompt,cfg,cfg_norm,steps,batch_size,timestep_shift,cfg_interval,width,height,seed,prefetch_count,think_mode,enhance,)
+        except mm.InterruptProcessingException:
+            print("[SenseNova] Processing interrupted by user.")
+            raise
+        finally:
+            if offload_after:
+                model.model.to(torch.device("cpu"))
+            clear_comfyui_cache()
 
-        return io.NodeOutput(image,text)
+        return io.NodeOutput(image_out, text_out)

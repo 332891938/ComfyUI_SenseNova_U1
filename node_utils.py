@@ -10,6 +10,40 @@ from comfy.utils import common_upscale
 
 cur_path = os.path.dirname(os.path.abspath(__file__))
 
+# SenseNova image-token grid factor (patch_size * merge); width/height must be divisible by this.
+IMAGE_GRID_FACTOR = 32
+
+
+def resolve_output_wh(
+    width: int,
+    height: int,
+    target_pixels: str,
+    supported_resolutions: dict[str, tuple[int, int]],
+) -> tuple[int, int]:
+    """Resolve output (W, H): custom pixels when both > 0, else ``target_pixels`` preset."""
+    if width > 0 or height > 0:
+        if width <= 0 or height <= 0:
+            raise ValueError(
+                "Set both width and height for a custom resolution, or leave both at 0 to use target_pixels."
+            )
+        w, h = int(width), int(height)
+        if w % IMAGE_GRID_FACTOR or h % IMAGE_GRID_FACTOR:
+            raise ValueError(
+                f"Custom width/height must be multiples of {IMAGE_GRID_FACTOR}, got {w}x{h}."
+            )
+        return w, h
+    if target_pixels not in supported_resolutions:
+        raise ValueError(
+            f"Unknown target_pixels {target_pixels!r}; supported: {list(supported_resolutions)}"
+        )
+    return supported_resolutions[target_pixels]
+
+
+def throw_if_processing_interrupted() -> None:
+    """Propagate ComfyUI queue cancel into long-running SenseNova inference."""
+    mm.throw_exception_if_processing_interrupted()
+
+
 def clear_comfyui_cache():
     cf_models=mm.loaded_models()
     try:
