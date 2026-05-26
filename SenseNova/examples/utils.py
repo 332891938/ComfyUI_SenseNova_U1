@@ -52,7 +52,8 @@ def _streaming_model(
     try:
         yield wrapped  # type: ignore[misc]
     finally:
-       
+        if hasattr(wrapped, "teardown"):
+            wrapped.teardown()
         wrapped.to("cpu")
         cleanup_memory()
         # Flush the host (pinned) memory cache so that freed pinned pages are

@@ -233,6 +233,7 @@ class SimpleLayerStreamingWrapper(nn.Module):
         self._target_device = target_device
         self._active_count = active_count
         self._store = _SimpleLayerStore(self._layers, self._target_device)
+        self._hooks: list[torch.utils.hooks.RemovableHandle] = []
         
         # 将非层参数移到GPU
         self._move_non_layer_params_to_gpu()
@@ -273,6 +274,14 @@ class SimpleLayerStreamingWrapper(nn.Module):
             idx = idx_map[id(layer)]
             pre_hook = layer.register_forward_pre_hook(functools.partial(_pre_hook, idx=idx))
             post_hook = layer.register_forward_hook(functools.partial(_post_hook, idx=idx))
+            self._hooks.extend([pre_hook, post_hook])
+
+    def teardown(self) -> None:
+        """Remove forward hooks so repeated streaming runs do not stack and slow down."""
+        for hook in self._hooks:
+            hook.remove()
+        self._hooks.clear()
+        torch.cuda.synchronize(device=self._target_device)
     
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         return self._model(*args, **kwargs)

@@ -51,6 +51,7 @@ def clear_comfyui_cache():
             pipe.unpatch_model(device_to=torch.device("cpu"))
     except: pass
     mm.soft_empty_cache()
+    gc.collect()
     torch.cuda.empty_cache()
     max_gpu_memory = torch.cuda.max_memory_allocated()
     print(f"After Max GPU memory allocated: {max_gpu_memory / 1000 ** 3:.2f} GB")
